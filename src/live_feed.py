@@ -97,7 +97,7 @@ def fetch_vix():
     try:
         vix = yf.download("^INDIAVIX", period="2d", interval="1d", progress=False)
         if not vix.empty:
-            val = float(vix["Close"].iloc[-1])
+            val = float(vix["Close"].iloc[-1].iloc[0])
             print(f"✓ VIX: {val:.2f}")
             return val
     except Exception as e:
