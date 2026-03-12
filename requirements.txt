@@ -20,7 +20,7 @@ uvicorn==0.41.0
 
 # AI Layer
 groq
-google-generativeai
+google-genai
 
 # Utilities
 python-dotenv
