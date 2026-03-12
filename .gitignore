@@ -1,0 +1,39 @@
+# Data files - never push large CSVs or DB dumps
+data/raw/
+data/processed/
+*.csv
+*.parquet
+*.pkl
+
+# Models - never push trained model files
+models/
+!models/.gitkeep
+
+# Environment variables - never push API keys
+.env
+
+# Python cache
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+
+# Virtual environment
+venv/
+env/
+.venv/
+
+# Jupyter checkpoints
+.ipynb_checkpoints/
+
+# VS Code settings
+.vscode/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
