@@ -11,14 +11,22 @@ MODELS_DIR   = "models"
 WINDOWS      = [5, 15, 30]
 
 
+HOLDOUT_DATE = "2025-07-01"  # last 6 months kept for backtest
+
 def load_data(window):
     print(f"Loading labeled data for window={window}min...")
     df = pd.read_parquet(LABELED_PATH)
+    df.index = pd.to_datetime(df.index, utc=True)
+    
+    # Keep only data before holdout date for training
+    df = df[df.index < pd.Timestamp(HOLDOUT_DATE, tz="UTC")]
+    
     other_labels = [f"label_{w}" for w in WINDOWS if w != window]
     df.drop(columns=other_labels, inplace=True)
     df.rename(columns={f"label_{window}": "label"}, inplace=True)
     df = df[df["label"].notna()]
     print(f"Total rows: {len(df)} | Features: {len(df.columns) - 1}")
+    print(f"Training period: {df.index.min()} to {df.index.max()}")
     return df
 
 
