@@ -9,8 +9,13 @@ url = "postgresql://{}:{}@{}:{}/{}".format(
 )
 engine = create_engine(url)
 with engine.connect() as conn:
-    r = conn.execute(text("SELECT time, close FROM nifty_1min WHERE time > '2026-03-13' ORDER BY time DESC LIMIT 5"))
-    rows = r.fetchall()
-    print("Today rows in DB:", len(rows))
-    for row in rows:
-        print(row)
+    # Today's price range
+    r = conn.execute(text("SELECT MIN(close), MAX(close), COUNT(*) FROM nifty_1min WHERE time > '2026-03-13'"))
+    row = r.fetchone()
+    print(f"Today — Low: {row[0]}, High: {row[1]}, Candles: {row[2]}")
+
+    # Price after first signal (06:57 UTC)
+    r = conn.execute(text("SELECT time, close FROM nifty_1min WHERE time >= '2026-03-13 06:57:00' ORDER BY time ASC LIMIT 10"))
+    print("\nPrice after first signal (DOWN @ 23288):")
+    for row in r:
+        print(f"  {row[0]} → {row[1]}")
