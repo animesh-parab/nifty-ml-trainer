@@ -87,9 +87,9 @@ def signal_latest():
         features = get_latest_features(1)
         signals  = predict_all(features)
         return {
-            "timestamp": str(features.index[-1]),
-            "signals":   signals,
-            "vix":       round(float(features["vix_close"].iloc[-1]), 2),
+            "timestamp":  str(features.index[-1]),
+            "signals":    signals,
+            "vix":        round(float(features["vix_close"].iloc[-1]), 2),
             "vix_regime": int(features["vix_regime"].iloc[-1]),
         }
     except Exception as e:
@@ -99,16 +99,22 @@ def signal_latest():
 @app.get("/market/context")
 def market_context():
     try:
-        engine = get_engine()
-        with engine.connect() as conn:
-            result = conn.execute(text(
-                "SELECT time, close FROM nifty_1min ORDER BY time DESC LIMIT 1"
-            ))
-            row = result.fetchone()
         features = get_latest_features(1)
+        try:
+            engine = get_engine()
+            with engine.connect() as conn:
+                result = conn.execute(text(
+                    "SELECT time, close FROM nifty_1min ORDER BY time DESC LIMIT 1"
+                ))
+                row   = result.fetchone()
+                price = round(float(row[1]), 2)
+                ts    = str(row[0])
+        except Exception:
+            price = round(float(features["ema_9"].iloc[-1]), 2)
+            ts    = str(features.index[-1])
         return {
-            "price":      round(float(row[1]), 2),
-            "timestamp":  str(row[0]),
+            "price":      price,
+            "timestamp":  ts,
             "vix":        round(float(features["vix_close"].iloc[-1]), 2),
             "vix_regime": int(features["vix_regime"].iloc[-1]),
             "rsi_14":     round(float(features["rsi_14"].iloc[-1]), 2),
@@ -123,9 +129,9 @@ def market_context():
 @app.get("/signal/history")
 def signal_history():
     try:
-        features   = get_latest_features(50)
-        label_map  = {1: "UP", -1: "DOWN", 0: "SIDEWAYS"}
-        history    = []
+        features  = get_latest_features(50)
+        label_map = {1: "UP", -1: "DOWN", 0: "SIDEWAYS"}
+        history   = []
         for ts, row in features.iterrows():
             row_df  = pd.DataFrame([row])
             signals = {}
@@ -153,13 +159,15 @@ def ai_analysis():
         features = get_latest_features(1)
         signals  = predict_all(features)
         vix      = float(features["vix_close"].iloc[-1])
-
-        engine = get_engine()
-        with engine.connect() as conn:
-            result = conn.execute(text(
-                "SELECT close FROM nifty_1min ORDER BY time DESC LIMIT 1"
-            ))
-            price = float(result.fetchone()[0])
+        try:
+            engine = get_engine()
+            with engine.connect() as conn:
+                result = conn.execute(text(
+                    "SELECT close FROM nifty_1min ORDER BY time DESC LIMIT 1"
+                ))
+                price = float(result.fetchone()[0])
+        except Exception:
+            price = float(features["ema_9"].iloc[-1])
 
         client = groq.Groq(api_key=GROQ_KEY)
         signal_summary = "\n".join([
@@ -188,10 +196,10 @@ Be concise - max 4 sentences."""
             max_tokens=200
         )
         return {
-            "analysis":  response.choices[0].message.content,
-            "price":     round(price, 2),
-            "vix":       round(vix, 2),
-            "signals":   signals,
+            "analysis": response.choices[0].message.content,
+            "price":    round(price, 2),
+            "vix":      round(vix, 2),
+            "signals":  signals,
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

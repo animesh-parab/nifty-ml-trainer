@@ -19,22 +19,20 @@ import ta
 load_dotenv()
 
 # ── Config ──────────────────────────────────────────────────
-API_KEY      = os.getenv("ANGEL_API_KEY")
-CLIENT_ID    = os.getenv("ANGEL_CLIENT_ID")
-MPIN         = os.getenv("ANGEL_MPIN")
-TOTP_SECRET  = os.getenv("ANGEL_TOTP_SECRET")
+API_KEY     = os.getenv("ANGEL_API_KEY")
+CLIENT_ID   = os.getenv("ANGEL_CLIENT_ID")
+MPIN        = os.getenv("ANGEL_MPIN")
+TOTP_SECRET = os.getenv("ANGEL_TOTP_SECRET")
 
 DB_URL = "postgresql://{}:{}@{}:{}/{}".format(
     os.getenv("DB_USER"), os.getenv("DB_PASS"),
     os.getenv("DB_HOST"), os.getenv("DB_PORT"), os.getenv("DB_NAME")
 )
 
-NIFTY_TOKEN    = "99926000"
-FEATURES_PATH  = "data/processed/features.parquet"
-LABELED_PATH   = "data/processed/labeled.parquet"
-
-MARKET_START   = 9 * 60 + 15   # 9:15 AM in minutes
-MARKET_END     = 15 * 60 + 30  # 3:30 PM in minutes
+NIFTY_TOKEN   = "99926000"
+FEATURES_PATH = "data/processed/features.parquet"
+MARKET_START  = 9 * 60 + 15   # 9:15 AM
+MARKET_END    = 15 * 60 + 30  # 3:30 PM
 
 # ── Angel One Auth ──────────────────────────────────────────
 _smart_api = None
@@ -59,14 +57,14 @@ def get_smart_api():
         return None
 
 
-# ── Fetch 1-min candles from Angel One ─────────────────────
-def fetch_candles(days=2):
+# ── Fetch 1-min candles ─────────────────────────────────────
+def fetch_candles(minutes=60):
     api = get_smart_api()
     if not api:
         return pd.DataFrame()
     try:
         to_date   = datetime.now()
-        from_date = to_date - timedelta(days=days)
+        from_date = to_date - timedelta(minutes=minutes)
         response  = api.getCandleData({
             "exchange":    "NSE",
             "symboltoken": NIFTY_TOKEN,
@@ -82,7 +80,7 @@ def fetch_candles(days=2):
             df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True)
             for col in ["open", "high", "low", "close", "volume"]:
                 df[col] = df[col].astype(float)
-            print(f"✓ Fetched {len(df)} candles from Angel One")
+            print(f"✓ Fetched {len(df)} candles")
             return df
         else:
             print(f"✗ Candle fetch failed: {response.get('message')}")
@@ -92,7 +90,7 @@ def fetch_candles(days=2):
         return pd.DataFrame()
 
 
-# ── Fetch VIX from yfinance ─────────────────────────────────
+# ── Fetch VIX ───────────────────────────────────────────────
 def fetch_vix():
     try:
         vix = yf.download("^INDIAVIX", period="2d", interval="1d", progress=False)
@@ -102,110 +100,107 @@ def fetch_vix():
             return val
     except Exception as e:
         print(f"✗ VIX error: {e}")
-    return 15.0  # fallback
+    return 15.0
 
 
 # ── Insert candles into TimescaleDB ────────────────────────
 def insert_candles(df):
     engine = create_engine(DB_URL)
     inserted = 0
+    print(f"  Sample timestamp: {df['timestamp'].iloc[-1]} (type: {df['timestamp'].iloc[-1].tzinfo})")
     with engine.connect() as conn:
         for _, row in df.iterrows():
             try:
-                conn.execute(text("""
-                    INSERT INTO nifty_1min (time, open, high, low, close, volume)
-                    VALUES (:time, :open, :high, :low, :close, :volume)
-                    ON CONFLICT (time) DO NOTHING
-                """), {
-                    "time":   row["timestamp"],
-                    "open":   row["open"],
-                    "high":   row["high"],
-                    "low":    row["low"],
-                    "close":  row["close"],
-                    "volume": row["volume"],
-                })
+                # Check if already exists first
+                exists = conn.execute(text(
+                    "SELECT 1 FROM nifty_1min WHERE time = :time"
+                ), {"time": row["timestamp"]}).fetchone()
+                if not exists:
+                    conn.execute(text("""
+                        INSERT INTO nifty_1min (time, open, high, low, close)
+                        VALUES (:time, :open, :high, :low, :close)
+                    """), {
+                        "time":  row["timestamp"],
+                        "open":  row["open"],
+                        "high":  row["high"],
+                        "low":   row["low"],
+                        "close": row["close"],
+                    })
+                    inserted += 1
                 inserted += 1
             except Exception as e:
-                pass
+                print(f"  Insert error: {e}")
+                break
         conn.commit()
     print(f"✓ Inserted {inserted} new candles into DB")
 
 
-# ── Calculate all 44 features ──────────────────────────────
+# ── Calculate features ──────────────────────────────────────
 def calculate_features(df, vix_val):
     df = df.copy().sort_values("timestamp").reset_index(drop=True)
     c  = df["close"]
     h  = df["high"]
     l  = df["low"]
 
-    # Basic indicators
-    df["rsi_14"]        = ta.momentum.RSIIndicator(c, 14).rsi()
-    df["ema_9"]         = ta.trend.EMAIndicator(c, 9).ema_indicator()
-    df["ema_21"]        = ta.trend.EMAIndicator(c, 21).ema_indicator()
-    df["ema_50"]        = ta.trend.EMAIndicator(c, 50).ema_indicator()
-    df["ema_cross_9_21"]  = (df["ema_9"] > df["ema_21"]).astype(int)
-    df["ema_cross_21_50"] = (df["ema_21"] > df["ema_50"]).astype(int)
+    df["rsi_14"]          = ta.momentum.RSIIndicator(c, 14).rsi()
+    df["ema_9"]           = ta.trend.EMAIndicator(c, 9).ema_indicator()
+    df["ema_21"]          = ta.trend.EMAIndicator(c, 21).ema_indicator()
+    df["ema_50"]          = ta.trend.EMAIndicator(c, 50).ema_indicator()
+    df["ema_9_21_cross"]  = (df["ema_9"] > df["ema_21"]).astype(int)
+    df["ema_21_50_cross"] = (df["ema_21"] > df["ema_50"]).astype(int)
 
     macd = ta.trend.MACD(c)
-    df["macd"]          = macd.macd()
-    df["macd_signal"]   = macd.macd_signal()
-    df["macd_hist"]     = macd.macd_diff()
+    df["macd"]            = macd.macd()
+    df["macd_signal"]     = macd.macd_signal()
+    df["macd_hist"]       = macd.macd_diff()
 
     bb = ta.volatility.BollingerBands(c, 20, 2)
-    df["bb_position"]   = (c - bb.bollinger_lband()) / (bb.bollinger_hband() - bb.bollinger_lband() + 1e-9)
-    df["bb_width"]      = (bb.bollinger_hband() - bb.bollinger_lband()) / (bb.bollinger_mavg() + 1e-9)
+    df["bb_position"]     = (c - bb.bollinger_lband()) / (bb.bollinger_hband() - bb.bollinger_lband() + 1e-9)
+    df["bb_width"]        = (bb.bollinger_hband() - bb.bollinger_lband()) / (bb.bollinger_mavg() + 1e-9)
+    df["atr_14"]          = ta.volatility.AverageTrueRange(h, l, c, 14).average_true_range()
 
-    df["atr_14"]        = ta.volatility.AverageTrueRange(h, l, c, 14).average_true_range()
+    df["return_1"]        = c.pct_change(1)
+    df["return_5"]        = c.pct_change(5)
+    df["return_15"]       = c.pct_change(15)
 
-    # Returns
-    df["return_1"]      = c.pct_change(1)
-    df["return_5"]      = c.pct_change(5)
-    df["return_15"]     = c.pct_change(15)
+    df["candle_body"]     = (c - df["open"]).abs()
+    df["candle_range"]    = h - l
+    df["candle_ratio"]    = df["candle_body"] / (df["candle_range"] + 1e-9)
 
-    # Candle features
-    df["candle_body"]   = (c - df["open"]).abs()
-    df["candle_range"]  = h - l
-    df["candle_ratio"]  = df["candle_body"] / (df["candle_range"] + 1e-9)
+    df["hour"]            = df["timestamp"].dt.hour
+    df["minute"]          = df["timestamp"].dt.minute
+    df["day_of_week"]     = df["timestamp"].dt.dayofweek
 
-    # Time features
-    df["hour"]          = df["timestamp"].dt.hour
-    df["minute"]        = df["timestamp"].dt.minute
-    df["day_of_week"]   = df["timestamp"].dt.dayofweek
-
-    # Lag features
     for col in ["rsi_14", "macd", "atr_14", "bb_position"]:
         df[f"{col}_lag1"] = df[col].shift(1)
         df[f"{col}_lag2"] = df[col].shift(2)
 
-    # 5-min aggregated features
-    df["5m_rsi_14"]     = ta.momentum.RSIIndicator(c, 14).rsi().rolling(5).mean()
-    df["5m_ema_9"]      = ta.trend.EMAIndicator(c, 9).ema_indicator().rolling(5).mean()
-    df["5m_ema_21"]     = ta.trend.EMAIndicator(c, 21).ema_indicator().rolling(5).mean()
-    df["5m_macd"]       = macd.macd().rolling(5).mean()
-    df["5m_macd_hist"]  = macd.macd_diff().rolling(5).mean()
-    df["5m_atr_14"]     = df["atr_14"].rolling(5).mean()
+    df["5m_rsi_14"]       = ta.momentum.RSIIndicator(c, 14).rsi().rolling(5).mean()
+    df["5m_ema_9"]        = ta.trend.EMAIndicator(c, 9).ema_indicator().rolling(5).mean()
+    df["5m_ema_21"]       = ta.trend.EMAIndicator(c, 21).ema_indicator().rolling(5).mean()
+    df["5m_macd"]         = macd.macd().rolling(5).mean()
+    df["5m_macd_hist"]    = macd.macd_diff().rolling(5).mean()
+    df["5m_atr_14"]       = df["atr_14"].rolling(5).mean()
 
-    # 15-min aggregated features
-    df["15m_rsi_14"]    = ta.momentum.RSIIndicator(c, 14).rsi().rolling(15).mean()
-    df["15m_ema_9"]     = ta.trend.EMAIndicator(c, 9).ema_indicator().rolling(15).mean()
-    df["15m_ema_21"]    = ta.trend.EMAIndicator(c, 21).ema_indicator().rolling(15).mean()
-    df["15m_macd"]      = macd.macd().rolling(15).mean()
-    df["15m_macd_hist"] = macd.macd_diff().rolling(15).mean()
-    df["15m_atr_14"]    = df["atr_14"].rolling(15).mean()
+    df["15m_rsi_14"]      = ta.momentum.RSIIndicator(c, 14).rsi().rolling(15).mean()
+    df["15m_ema_9"]       = ta.trend.EMAIndicator(c, 9).ema_indicator().rolling(15).mean()
+    df["15m_ema_21"]      = ta.trend.EMAIndicator(c, 21).ema_indicator().rolling(15).mean()
+    df["15m_macd"]        = macd.macd().rolling(15).mean()
+    df["15m_macd_hist"]   = macd.macd_diff().rolling(15).mean()
+    df["15m_atr_14"]      = df["atr_14"].rolling(15).mean()
 
-    # VIX features
-    df["vix_close"]     = vix_val
-    df["vix_change"]    = 0.0
-    df["vix_regime"]    = int(0 if vix_val < 15 else 1 if vix_val < 20 else 2)
+    df["vix_close"]       = vix_val
+    df["vix_change"]      = 0.0
+    df["vix_regime"]      = int(0 if vix_val < 15 else 1 if vix_val < 20 else 2)
 
     return df
 
 
-# ── Update features.parquet with latest candles ────────────
+# ── Update features.parquet ─────────────────────────────────
 def update_features_parquet(df):
     FEATURE_COLS = [
         "rsi_14", "ema_9", "ema_21", "ema_50",
-        "ema_cross_9_21", "ema_cross_21_50",
+        "ema_9_21_cross", "ema_21_50_cross",
         "macd", "macd_signal", "macd_hist",
         "bb_position", "bb_width", "atr_14",
         "return_1", "return_5", "return_15",
@@ -226,13 +221,11 @@ def update_features_parquet(df):
     df = df.set_index("timestamp")[FEATURE_COLS]
     df.index = pd.to_datetime(df.index, utc=True)
 
-    # Load existing parquet and append new rows
     existing = pd.read_parquet(FEATURES_PATH)
     label_cols = [c for c in existing.columns if c.startswith("label_")]
     existing.drop(columns=label_cols, inplace=True, errors="ignore")
     existing.index = pd.to_datetime(existing.index, utc=True)
 
-    # Append only new rows
     new_rows = df[~df.index.isin(existing.index)]
     if len(new_rows) == 0:
         print("✓ No new rows to append")
@@ -240,13 +233,13 @@ def update_features_parquet(df):
 
     combined = pd.concat([existing, new_rows]).sort_index()
     combined.to_parquet(FEATURES_PATH)
-    print(f"✓ features.parquet updated — added {len(new_rows)} rows, total {len(combined)}")
+    print(f"✓ features.parquet updated — +{len(new_rows)} rows, total {len(combined)}")
 
 
 # ── Is market open? ─────────────────────────────────────────
 def is_market_open():
-    now = datetime.now()
-    if now.weekday() >= 5:  # Saturday/Sunday
+    now  = datetime.now()
+    if now.weekday() >= 5:
         return False
     mins = now.hour * 60 + now.minute
     return MARKET_START <= mins <= MARKET_END
@@ -258,50 +251,40 @@ def main():
     print("Nifty ML Trainer — Live Feed")
     print("=" * 50)
 
-    # Login once at startup
     api = get_smart_api()
     if not api:
-        print("✗ Could not connect to Angel One. Check credentials.")
+        print("✗ Could not connect to Angel One.")
         return
 
-    # Fetch VIX once per day
     vix_val  = fetch_vix()
     vix_date = datetime.now().date()
 
     print(f"Market open: {is_market_open()}")
-    print("Starting live feed loop... (Ctrl+C to stop)\n")
+    print("Starting loop... (Ctrl+C to stop)\n")
 
     while True:
         try:
             now = datetime.now()
 
-            # Refresh VIX daily
             if now.date() != vix_date:
                 vix_val  = fetch_vix()
                 vix_date = now.date()
 
             if not is_market_open():
-                next_check = 60
-                print(f"[{now.strftime('%H:%M:%S')}] Market closed — checking again in {next_check}s")
-                time.sleep(next_check)
+                print(f"[{now.strftime('%H:%M:%S')}] Market closed — checking in 60s")
+                time.sleep(60)
                 continue
 
             print(f"\n[{now.strftime('%H:%M:%S')}] Fetching live data...")
 
-            # Fetch latest candles (last 2 days for warmup)
-            candles = fetch_candles(days=2)
+            candles = fetch_candles(minutes=60)
             if candles.empty:
                 print("✗ No candles — retrying in 60s")
                 time.sleep(60)
                 continue
 
-            # Insert into TimescaleDB
             insert_candles(candles)
-
-            # Calculate features
             features = calculate_features(candles, vix_val)
-
-            # Update features.parquet
             update_features_parquet(features)
 
             print(f"✓ Done — sleeping 60s")
