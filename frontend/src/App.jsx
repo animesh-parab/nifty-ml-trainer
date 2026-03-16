@@ -78,11 +78,24 @@ function MetricRow({ label, value, color }) {
 function TradePanel({ signal, context }) {
   if (!signal || !context) return null
   const s5 = signal.signals[5]
+  const s15 = signal.signals[15]
+  const s30 = signal.signals[30]
   if (!s5 || s5.signal === "SIDEWAYS" || s5.confidence < 60) {
+    const emaCross = context.ema_9 > context.ema_21 ? "Bullish" : "Bearish"
+    const emaColor = context.ema_9 > context.ema_21 ? "#22c55e" : "#ef4444"
     return (
       <Card title="Trade Signal">
-        <div style={{ color: "#6b7280", textAlign: "center", padding: "20px", fontSize: "13px" }}>
-          No actionable signal — waiting for high confidence directional move
+        <div style={{ color: "#f59e0b", fontWeight: "700", fontSize: "12px", marginBottom: "14px" }}>
+          ⏸ WAITING FOR SIGNAL
+        </div>
+        <MetricRow label="5-min"     value={`${s5?.signal} (${s5?.confidence}%)`}  color="#f59e0b" />
+        <MetricRow label="15-min"    value={`${s15?.signal} (${s15?.confidence}%)`} color={SIGNAL_COLORS[s15?.signal]} />
+        <MetricRow label="30-min"    value={`${s30?.signal} (${s30?.confidence}%)`} color={SIGNAL_COLORS[s30?.signal]} />
+        <MetricRow label="EMA Bias"  value={emaCross} color={emaColor} />
+        <MetricRow label="RSI"       value={context.rsi_14}
+          color={context.rsi_14 > 70 ? "#ef4444" : context.rsi_14 < 30 ? "#22c55e" : "#9ca3af"} />
+        <div style={{ marginTop: "14px", fontSize: "11px", color: "#6b7280", lineHeight: "1.6" }}>
+          Trigger: 5-min UP/DOWN · Confidence &gt; 60%
         </div>
       </Card>
     )
@@ -200,8 +213,9 @@ export default function App() {
       color:      "#f9fafb",
       fontFamily: "'Inter', sans-serif",
       padding:    "24px 32px",
-      boxSizing:  "border-box",
-      width:      "100%",
+boxSizing:  "border-box",
+width:      "100%",
+maxWidth:   "100%",
     }}>
       {/* Header */}
       <div style={{
@@ -276,12 +290,13 @@ export default function App() {
         <>
           {/* ── LIVE SIGNALS TAB ── */}
           {tab === "live" && (
-            <div style={{
-              display:             "grid",
-              gridTemplateColumns: "1fr 1fr 1fr",
-              gap:                 "16px",
-              width:               "100%"
-            }}>
+  <div style={{
+    display:             "grid",
+    gridTemplateColumns: "1fr 1fr 1fr",
+    gap:                 "16px",
+    width:               "100%",
+    boxSizing:           "border-box"
+  }}>
               {/* Current Signals */}
               <Card title="Current Signals">
                 <div style={{ display: "flex", flexDirection: "column", gap: "14px" }}>

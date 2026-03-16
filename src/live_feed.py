@@ -272,7 +272,7 @@ def main():
 
             if not is_market_open():
                 print(f"[{now.strftime('%H:%M:%S')}] Market closed — checking in 60s")
-                time.sleep(60)
+                time.sleep(120)
                 continue
 
             print(f"\n[{now.strftime('%H:%M:%S')}] Fetching live data...")
@@ -280,22 +280,22 @@ def main():
             candles = fetch_candles(minutes=60)
             if candles.empty:
                 print("✗ No candles — retrying in 60s")
-                time.sleep(60)
+                time.sleep(120)
                 continue
 
             insert_candles(candles)
             features = calculate_features(candles, vix_val)
             update_features_parquet(features)
 
-            print(f"✓ Done — sleeping 60s")
-            time.sleep(60)
+            print(f"✓ Done — sleeping 120s")
+            time.sleep(120)
 
         except KeyboardInterrupt:
             print("\nStopped by user.")
             break
         except Exception as e:
             print(f"✗ Loop error: {e}")
-            time.sleep(60)
+            time.sleep(120)
 
 
 if __name__ == "__main__":
