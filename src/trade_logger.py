@@ -11,8 +11,17 @@ import joblib
 import numpy as np
 from datetime import datetime
 from dotenv import load_dotenv
+from sqlalchemy import create_engine, text
+import sys
+sys.path.insert(0, os.path.dirname(__file__))
+from smart_exits import get_exits
 
 load_dotenv()
+
+DB_URL = "postgresql://{}:{}@{}:{}/{}".format(
+    os.getenv("DB_USER"), os.getenv("DB_PASS"),
+    os.getenv("DB_HOST"), os.getenv("DB_PORT"), os.getenv("DB_NAME")
+)
 
 FEATURES_PATH  = "data/processed/features.parquet"
 TRADE_LOG_PATH = "data/processed/trade_log.csv"
@@ -50,8 +59,10 @@ def init_log():
     if not os.path.exists(TRADE_LOG_PATH):
         pd.DataFrame(columns=[
             "timestamp", "signal", "confidence",
-            "entry_price", "target", "stoploss",
-            "rr_ratio", "atr", "rsi", "vix", "outcome"
+            "entry_price", "stoploss", "sl_reason",
+            "t1", "t1_reason", "t2", "t2_reason",
+            "t3", "t3_reason", "rr_t1", "rr_t2", "rr_t3",
+            "atr", "rsi", "vix", "outcome"
         ]).to_csv(TRADE_LOG_PATH, index=False)
         print(f"✓ Trade log created: {TRADE_LOG_PATH}")
 
@@ -65,27 +76,29 @@ def already_logged(timestamp):
 
 
 def log_trade(ts, signal, confidence, entry, atr, rsi, vix):
-    if signal == "UP":
-        target   = round(entry + atr * 1.5, 2)
-        stoploss = round(entry - atr * 0.8, 2)
-    else:
-        target   = round(entry - atr * 1.5, 2)
-        stoploss = round(entry + atr * 0.8, 2)
-
-    rr = round(abs(target - entry) / abs(stoploss - entry), 2)
+    engine = create_engine(DB_URL)
+    exits  = get_exits(signal, entry, atr, engine)
 
     row = {
-        "timestamp":  str(ts),
-        "signal":     signal,
-        "confidence": confidence,
-        "entry_price": entry,
-        "target":     target,
-        "stoploss":   stoploss,
-        "rr_ratio":   rr,
-        "atr":        round(atr, 2),
-        "rsi":        round(rsi, 2),
-        "vix":        round(vix, 2),
-        "outcome":    "PENDING"
+        "timestamp":   str(ts),
+        "signal":      signal,
+        "confidence":  confidence,
+        "entry_price": round(entry, 2),
+        "stoploss":    exits["stoploss"],
+        "sl_reason":   exits["sl_reason"],
+        "t1":          exits["t1"],
+        "t1_reason":   exits["t1_reason"],
+        "t2":          exits["t2"],
+        "t2_reason":   exits["t2_reason"],
+        "t3":          exits["t3"],
+        "t3_reason":   exits["t3_reason"],
+        "rr_t1":       exits["rr_t1"],
+        "rr_t2":       exits["rr_t2"],
+        "rr_t3":       exits["rr_t3"],
+        "atr":         round(atr, 2),
+        "rsi":         round(rsi, 2),
+        "vix":         round(vix, 2),
+        "outcome":     "PENDING"
     }
 
     df = pd.read_csv(TRADE_LOG_PATH)
@@ -94,12 +107,13 @@ def log_trade(ts, signal, confidence, entry, atr, rsi, vix):
 
     print(f"\n{'='*50}")
     print(f"🚨 TRADE SIGNAL LOGGED")
-    print(f"  Time:       {ts}")
-    print(f"  Signal:     {signal} ({confidence}%)")
-    print(f"  Entry:      ₹{entry}")
-    print(f"  Target:     ₹{target}")
-    print(f"  Stoploss:   ₹{stoploss}")
-    print(f"  R/R:        {rr}")
+    print(f"  Time:     {ts}")
+    print(f"  Signal:   {signal} ({confidence}%)")
+    print(f"  Entry:    ₹{entry:.2f}")
+    print(f"  SL:       ₹{exits['stoploss']} (-{exits['sl_pts']} pts) [{exits['sl_reason']}]")
+    print(f"  T1:       ₹{exits['t1']} (+{exits['t1_pts']} pts) R/R:{exits['rr_t1']} [{exits['t1_reason']}]")
+    print(f"  T2:       ₹{exits['t2']} (+{exits['t2_pts']} pts) R/R:{exits['rr_t2']} [{exits['t2_reason']}]")
+    print(f"  T3:       ₹{exits['t3']} (+{exits['t3_pts']} pts) R/R:{exits['rr_t3']} [{exits['t3_reason']}]")
     print(f"{'='*50}\n")
 
 
@@ -138,7 +152,15 @@ def main():
             print(f"[{now.strftime('%H:%M:%S')}] {sig} {conf}% — ", end="")
 
             if sig != "SIDEWAYS" and conf >= MIN_CONFIDENCE:
-                entry = float(features["ema_9"].iloc[-1])
+                try:
+                    engine = create_engine(DB_URL)
+                    with engine.connect() as conn:
+                        result = conn.execute(text(
+                            "SELECT close FROM nifty_1min ORDER BY time DESC LIMIT 1"
+                        ))
+                        entry = float(result.fetchone()[0])
+                except:
+                    entry = float(features["ema_9"].iloc[-1])
                 atr   = float(features["atr_14"].iloc[-1])
                 rsi   = float(features["rsi_14"].iloc[-1])
                 vix   = float(features["vix_close"].iloc[-1])
@@ -159,15 +181,7 @@ def main():
             print(f"[{datetime.now().strftime('%H:%M:%S')}] Error: {e}")
             time.sleep(30)
 
-        except KeyboardInterrupt:
-            print("\nStopped.")
-            break
-        except KeyboardInterrupt:
-            print("\nStopped.")
-            break
-        except Exception as e:
-            print(f"[{datetime.now().strftime('%H:%M:%S')}] Error: {e}")
-            time.sleep(30)
+        
 
 
 if __name__ == "__main__":
