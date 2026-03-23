@@ -40,7 +40,7 @@ MARKET_END    = 15 * 60 + 30
 # ── Tick buffer — stores raw ticks for current candle ───────
 tick_buffer = []
 tick_lock   = threading.Lock()
-current_candle = None  # stores completed 1-min candles
+current_candle = None
 
 # ── Angel One Auth ──────────────────────────────────────────
 def login():
@@ -83,13 +83,10 @@ def on_data(wsapp, message):
             return
         if "last_traded_price" not in message:
             return
-
-        ltp = message.get("last_traded_price", 0) / 100.0  # Angel One sends paise
+        ltp = message.get("last_traded_price", 0) / 100.0
         ts  = datetime.now(timezone.utc)
-
         with tick_lock:
             tick_buffer.append({"timestamp": ts, "price": ltp})
-
     except Exception as e:
         pass
 
@@ -154,7 +151,7 @@ def insert_candle(candle):
 # ── Calculate features ──────────────────────────────────────
 def calculate_and_update_features(vix_val):
     try:
-        engine  = create_engine(DB_URL)
+        engine = create_engine(DB_URL)
         with engine.connect() as conn:
             result = conn.execute(text(
                 "SELECT time, open, high, low, close FROM nifty_1min ORDER BY time DESC LIMIT 200"
@@ -220,6 +217,11 @@ def calculate_and_update_features(vix_val):
         df["15m_macd_hist"]   = macd.macd_diff().rolling(15).mean()
         df["15m_atr_14"]      = df["atr_14"].rolling(15).mean()
 
+        adx_ind               = ta.trend.ADXIndicator(h, l, c, 14)
+        df["adx_14"]          = adx_ind.adx()
+        df["adx_pos"]         = adx_ind.adx_pos()
+        df["adx_neg"]         = adx_ind.adx_neg()
+
         df["vix_close"]       = vix_val
         df["vix_change"]      = 0.0
         df["vix_regime"]      = int(0 if vix_val < 15 else 1 if vix_val < 20 else 2)
@@ -240,6 +242,7 @@ def calculate_and_update_features(vix_val):
             "5m_macd", "5m_macd_hist", "5m_atr_14",
             "15m_rsi_14", "15m_ema_9", "15m_ema_21",
             "15m_macd", "15m_macd_hist", "15m_atr_14",
+            "adx_14", "adx_pos", "adx_neg",
             "vix_close", "vix_change", "vix_regime",
         ]
 
@@ -314,7 +317,6 @@ def main():
     vix_val = fetch_vix()
     print(f"Market open: {is_market_open()}")
 
-    # Start candle manager in background
     manager_thread = threading.Thread(
         target=candle_manager,
         args=(vix_val,),
@@ -323,10 +325,8 @@ def main():
     manager_thread.start()
     print("✓ Candle manager started")
 
-    # Token list for subscription
     token_list = [{"exchangeType": 1, "tokens": ["99926000"]}]
 
-    # WebSocket setup
     sws = SmartWebSocketV2(
         smart_api.access_token,
         API_KEY,

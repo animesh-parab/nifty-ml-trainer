@@ -20,7 +20,8 @@ GROQ_KEY = os.getenv("GROQ_API_KEY")
 
 MODELS_DIR    = "models"
 FEATURES_PATH = "data/processed/features.parquet"
-BACKTEST_PATH = "data/processed/backtest_results.json"
+TRADE_LOG_PATH = "data/processed/trade_log.csv"
+TRADE_LOG_PATH = "data/processed/trade_log.csv"
 
 app = FastAPI(title="Nifty ML Trainer API")
 
@@ -51,11 +52,32 @@ def get_engine():
     return create_engine(url)
 
 
+MODEL_FEATURES = [
+    "rsi_14", "ema_9", "ema_21", "ema_50",
+    "ema_9_21_cross", "ema_21_50_cross",
+    "macd", "macd_signal", "macd_hist",
+    "bb_position", "bb_width", "atr_14",
+    "return_1", "return_5", "return_15",
+    "candle_body", "candle_range", "candle_ratio",
+    "hour", "minute", "day_of_week",
+    "rsi_14_lag1", "rsi_14_lag2",
+    "macd_lag1", "macd_lag2",
+    "atr_14_lag1", "atr_14_lag2",
+    "bb_position_lag1", "bb_position_lag2",
+    "5m_rsi_14", "5m_ema_9", "5m_ema_21",
+    "5m_macd", "5m_macd_hist", "5m_atr_14",
+    "15m_rsi_14", "15m_ema_9", "15m_ema_21",
+    "15m_macd", "15m_macd_hist", "15m_atr_14",
+    "vix_close", "vix_change", "vix_regime",
+]
+
 def get_latest_features(n=1):
     df = pd.read_parquet(FEATURES_PATH)
     label_cols = [c for c in df.columns if c.startswith("label_")]
     df.drop(columns=label_cols, inplace=True, errors="ignore")
-    return df.tail(n)
+    # Only use the 44 features the model was trained on
+    available = [c for c in MODEL_FEATURES if c in df.columns]
+    return df[available].tail(n)
 
 
 def predict_all(features):
@@ -86,11 +108,31 @@ def signal_latest():
     try:
         features = get_latest_features(1)
         signals  = predict_all(features)
+
+        # Get smart exits for active signal
+        s5 = signals.get(5, {})
+        exits = None
+        if s5.get("signal") != "SIDEWAYS" and s5.get("confidence", 0) >= 60:
+            try:
+                import sys
+                sys.path.insert(0, "src")
+                from smart_exits import get_exits
+                engine = get_engine()
+                result = engine.connect().execute(text(
+                    "SELECT close FROM nifty_1min ORDER BY time DESC LIMIT 1"
+                ))
+                price = float(result.fetchone()[0])
+                atr   = float(features["atr_14"].iloc[-1])
+                exits = get_exits(s5["signal"], price, atr, engine)
+            except Exception as ex:
+                print(f"Smart exits error: {ex}")
+
         return {
             "timestamp":  str(features.index[-1]),
             "signals":    signals,
             "vix":        round(float(features["vix_close"].iloc[-1]), 2),
             "vix_regime": int(features["vix_regime"].iloc[-1]),
+            "exits":      exits,
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -204,12 +246,148 @@ Be concise - max 4 sentences."""
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-
 @app.get("/backtest/results")
 def backtest_results():
     try:
         with open(BACKTEST_PATH) as f:
             results = json.load(f)
         return results
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/trades/live")
+def live_trades():
+    try:
+        import csv
+        from datetime import date as dt_date
+
+        trades = []
+        with open(TRADE_LOG_PATH, newline='') as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                trades.append(row)
+
+        if not trades:
+            return {"trades": [], "summary": {}}
+
+        today = str(dt_date.today())
+
+        # Get current price
+        try:
+            engine = get_engine()
+            with engine.connect() as conn:
+                result = conn.execute(text(
+                    "SELECT close, high, low FROM nifty_1min ORDER BY time DESC LIMIT 1"
+                ))
+                row = result.fetchone()
+                current_price = float(row[0])
+                current_high  = float(row[1])
+                current_low   = float(row[2])
+        except:
+            current_price = current_high = current_low = 0
+
+        # Check each trade outcome
+        for trade in trades:
+            ts      = trade["timestamp"]
+            signal  = trade["signal"]
+            entry   = float(trade["entry_price"])
+            sl      = float(trade["stoploss"])
+            outcome = trade["outcome"]
+
+            t1 = float(trade.get("t1") or trade.get("target") or 0)
+            t2 = float(trade.get("t2") or 0)
+            t3 = float(trade.get("t3") or 0)
+
+            if outcome == "PENDING" and current_price > 0:
+                try:
+                    engine2 = get_engine()
+                    with engine2.connect() as conn2:
+                        result2 = conn2.execute(text("""
+                            SELECT high, low FROM nifty_1min
+                            WHERE time > :ts
+                            ORDER BY time ASC
+                            LIMIT 100
+                        """), {"ts": ts})
+                        candles = result2.fetchall()
+
+                    live_status = "ACTIVE"
+                    is_long = signal == "UP"
+
+                    for candle in candles:
+                        h = float(candle[0])
+                        l = float(candle[1])
+                        if is_long:
+                            if l <= sl:
+                                live_status = "SL_HIT"
+                                break
+                            elif t3 and h >= t3:
+                                live_status = "T3_HIT"
+                                break
+                            elif t2 and h >= t2:
+                                live_status = "T2_HIT"
+                                break
+                            elif t1 and h >= t1:
+                                live_status = "T1_HIT"
+                        else:
+                            if h >= sl:
+                                live_status = "SL_HIT"
+                                break
+                            elif t3 and l <= t3:
+                                live_status = "T3_HIT"
+                                break
+                            elif t2 and l <= t2:
+                                live_status = "T2_HIT"
+                                break
+                            elif t1 and l <= t1:
+                                live_status = "T1_HIT"
+
+                    trade["live_status"] = live_status
+                except:
+                    trade["live_status"] = "ACTIVE"
+            else:
+                trade["live_status"] = outcome
+
+            trade["current_price"] = current_price
+            trade["is_today"] = ts.startswith(today)
+
+        # Auto-update CSV outcomes from live_status
+        try:
+            updated = False
+            for trade in trades:
+                ls = trade.get("live_status", "")
+                if trade["outcome"] == "PENDING" and ls in ["SL_HIT", "T1_HIT", "T2_HIT", "T3_HIT"]:
+                    trade["outcome"] = ls
+                    updated = True
+            if updated:
+                import csv as csv_mod
+                fieldnames = [k for k in trades[0].keys()
+                              if k not in ["live_status", "current_price", "is_today"]]
+                with open(TRADE_LOG_PATH, "w", newline="") as f:
+                    writer = csv_mod.DictWriter(f, fieldnames=fieldnames)
+                    writer.writeheader()
+                    for t in trades:
+                        row = {k: t[k] for k in fieldnames}
+                        writer.writerow(row)
+        except Exception as ex:
+            print(f"CSV update error: {ex}")
+
+        # Summary
+        today_trades  = [t for t in trades if t.get("is_today")]
+        pending       = [t for t in trades if t["outcome"] == "PENDING"]
+        wins          = [t for t in trades if "WIN" in t["outcome"]]
+        losses        = [t for t in trades if "LOSS" in t["outcome"]]
+
+        return {
+            "trades":        trades,
+            "current_price": current_price,
+            "summary": {
+                "total":        len(trades),
+                "today":        len(today_trades),
+                "pending":      len(pending),
+                "wins":         len(wins),
+                "losses":       len(losses),
+                "win_rate":     round(len(wins) / max(len(wins) + len(losses), 1) * 100, 1),
+            }
+        }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

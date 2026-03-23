@@ -31,8 +31,8 @@ DB_URL = "postgresql://{}:{}@{}:{}/{}".format(
 
 NIFTY_TOKEN   = "99926000"
 FEATURES_PATH = "data/processed/features.parquet"
-MARKET_START  = 9 * 60 + 15   # 9:15 AM
-MARKET_END    = 15 * 60 + 30  # 3:30 PM
+MARKET_START  = 9 * 60 + 15
+MARKET_END    = 15 * 60 + 30
 
 # ── Angel One Auth ──────────────────────────────────────────
 _smart_api = None
@@ -111,7 +111,6 @@ def insert_candles(df):
     with engine.connect() as conn:
         for _, row in df.iterrows():
             try:
-                # Check if already exists first
                 exists = conn.execute(text(
                     "SELECT 1 FROM nifty_1min WHERE time = :time"
                 ), {"time": row["timestamp"]}).fetchone()
@@ -189,6 +188,11 @@ def calculate_features(df, vix_val):
     df["15m_macd_hist"]   = macd.macd_diff().rolling(15).mean()
     df["15m_atr_14"]      = df["atr_14"].rolling(15).mean()
 
+    adx_ind               = ta.trend.ADXIndicator(h, l, c, 14)
+    df["adx_14"]          = adx_ind.adx()
+    df["adx_pos"]         = adx_ind.adx_pos()
+    df["adx_neg"]         = adx_ind.adx_neg()
+
     df["vix_close"]       = vix_val
     df["vix_change"]      = 0.0
     df["vix_regime"]      = int(0 if vix_val < 15 else 1 if vix_val < 20 else 2)
@@ -214,6 +218,7 @@ def update_features_parquet(df):
         "5m_macd", "5m_macd_hist", "5m_atr_14",
         "15m_rsi_14", "15m_ema_9", "15m_ema_21",
         "15m_macd", "15m_macd_hist", "15m_atr_14",
+        "adx_14", "adx_pos", "adx_neg",
         "vix_close", "vix_change", "vix_regime",
     ]
 

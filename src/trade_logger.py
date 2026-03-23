@@ -48,11 +48,34 @@ def is_market_open():
     return MARKET_START <= mins <= MARKET_END
 
 
+MODEL_FEATURES = [
+    "rsi_14", "ema_9", "ema_21", "ema_50",
+    "ema_9_21_cross", "ema_21_50_cross",
+    "macd", "macd_signal", "macd_hist",
+    "bb_position", "bb_width", "atr_14",
+    "return_1", "return_5", "return_15",
+    "candle_body", "candle_range", "candle_ratio",
+    "hour", "minute", "day_of_week",
+    "rsi_14_lag1", "rsi_14_lag2",
+    "macd_lag1", "macd_lag2",
+    "atr_14_lag1", "atr_14_lag2",
+    "bb_position_lag1", "bb_position_lag2",
+    "5m_rsi_14", "5m_ema_9", "5m_ema_21",
+    "5m_macd", "5m_macd_hist", "5m_atr_14",
+    "15m_rsi_14", "15m_ema_9", "15m_ema_21",
+    "15m_macd", "15m_macd_hist", "15m_atr_14",
+    "vix_close", "vix_change", "vix_regime",
+]
+
 def get_latest_row():
     df = pd.read_parquet(FEATURES_PATH)
     label_cols = [c for c in df.columns if c.startswith("label_")]
     df.drop(columns=label_cols, inplace=True, errors="ignore")
-    return df.tail(1)
+    # Use only the 44 features model was trained on
+    # ADX columns kept separately for filtering only
+    available = [c for c in MODEL_FEATURES if c in df.columns]
+    row = df.tail(1)
+    return row[available], row  # returns (model_features, full_row)
 
 
 def init_log():
@@ -138,10 +161,10 @@ def main():
                 continue
 
             try:
-                features = get_latest_row()
+                features, full_row = get_latest_row()
             except Exception:
                 time.sleep(5)
-                features = get_latest_row()
+                features, full_row = get_latest_row()
 
             ts   = features.index[-1]
             pred = model.predict(features)[0]
@@ -149,9 +172,11 @@ def main():
             conf  = round(max(proba) * 100, 1)
             sig   = LABEL_MAP[int(pred)]
 
-            print(f"[{now.strftime('%H:%M:%S')}] {sig} {conf}% — ", end="")
+            adx = float(full_row["adx_14"].iloc[-1]) if "adx_14" in full_row.columns else 25.0
+            trend = "TRENDING" if adx >= 20 else "RANGING"
+            print(f"[{now.strftime('%H:%M:%S')}] {sig} {conf}% ADX:{adx:.1f} ({trend}) — ", end="")
 
-            if sig != "SIDEWAYS" and conf >= MIN_CONFIDENCE:
+            if sig != "SIDEWAYS" and conf >= MIN_CONFIDENCE and adx >= 20:
                 try:
                     engine = create_engine(DB_URL)
                     with engine.connect() as conn:
