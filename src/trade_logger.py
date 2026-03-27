@@ -6,6 +6,7 @@ Run alongside live_feed.py during market hours
 
 import os
 import time
+import logging
 import pandas as pd
 import joblib
 import numpy as np
@@ -29,8 +30,25 @@ MODELS_DIR     = "models"
 MIN_CONFIDENCE = 60.0
 MARKET_START   = 9 * 60 + 15
 MARKET_END     = 15 * 60 + 30
+COOLDOWN_SECS  = 300  # 5-min cooldown per direction
 
 LABEL_MAP = {1: "UP", -1: "DOWN", 0: "SIDEWAYS"}
+
+
+def setup_logging():
+    log_dir = os.path.join("logs", datetime.now().strftime("%Y-%m-%d"))
+    os.makedirs(log_dir, exist_ok=True)
+    log_path = os.path.join(log_dir, "trade_logger.log")
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(message)s",
+        datefmt="%H:%M:%S",
+        handlers=[
+            logging.FileHandler(log_path),
+            logging.StreamHandler(),
+        ]
+    )
+    return logging.getLogger(__name__)
 
 
 def load_model():
@@ -98,8 +116,7 @@ def already_logged(timestamp):
         return False
 
 
-def log_trade(ts, signal, confidence, entry, atr, rsi, vix):
-    engine = create_engine(DB_URL)
+def log_trade(ts, signal, confidence, entry, atr, rsi, vix, engine):
     exits  = get_exits(signal, entry, atr, engine)
 
     row = {
@@ -145,18 +162,22 @@ def main():
     print("Nifty ML Trainer — Trade Logger")
     print("=" * 50)
 
-    model = load_model()
+    logger = setup_logging()
+    model  = load_model()
+    engine = create_engine(DB_URL)
     init_log()
-    last_signal_ts = None
 
-    print("Watching for trade signals... (Ctrl+C to stop)\n")
+    # Cooldown tracking: direction → last logged datetime
+    last_logged_time = {"UP": None, "DOWN": None}
+
+    logger.info("Watching for trade signals... (Ctrl+C to stop)")
 
     while True:
         try:
             now = datetime.now()
 
             if not is_market_open():
-                print(f"[{now.strftime('%H:%M:%S')}] Market closed — checking in 60s")
+                logger.info("Market closed — checking in 60s")
                 time.sleep(60)
                 continue
 
@@ -166,47 +187,56 @@ def main():
                 time.sleep(5)
                 features, full_row = get_latest_row()
 
-            ts   = features.index[-1]
-            pred = model.predict(features)[0]
+            ts    = features.index[-1]
+            pred  = model.predict(features)[0]
             proba = model.predict_proba(features)[0]
             conf  = round(max(proba) * 100, 1)
             sig   = LABEL_MAP[int(pred)]
 
-            adx = float(full_row["adx_14"].iloc[-1]) if "adx_14" in full_row.columns else 25.0
+            adx   = float(full_row["adx_14"].iloc[-1]) if "adx_14" in full_row.columns else 25.0
             trend = "TRENDING" if adx >= 20 else "RANGING"
-            print(f"[{now.strftime('%H:%M:%S')}] {sig} {conf}% ADX:{adx:.1f} ({trend}) — ", end="")
 
             if sig != "SIDEWAYS" and conf >= MIN_CONFIDENCE and adx >= 20:
+                # Cooldown check — block same direction for 5 mins
+                last_time = last_logged_time.get(sig)
+                elapsed   = (now - last_time).total_seconds() if last_time else COOLDOWN_SECS + 1
+                if elapsed < COOLDOWN_SECS:
+                    remaining = int(COOLDOWN_SECS - elapsed)
+                    logger.info(f"{sig} {conf}% ADX:{adx:.1f} ({trend}) — cooldown ({remaining}s left for {sig})")
+                    time.sleep(30)
+                    continue
+
                 try:
-                    engine = create_engine(DB_URL)
                     with engine.connect() as conn:
                         result = conn.execute(text(
                             "SELECT close FROM nifty_1min ORDER BY time DESC LIMIT 1"
                         ))
                         entry = float(result.fetchone()[0])
-                except:
+                except Exception:
                     entry = float(features["ema_9"].iloc[-1])
-                atr   = float(features["atr_14"].iloc[-1])
-                rsi   = float(features["rsi_14"].iloc[-1])
-                vix   = float(features["vix_close"].iloc[-1])
-                if not already_logged(ts):
-                    log_trade(ts, sig, conf, entry, atr, rsi, vix)
-                else:
-                    print("already logged")
-            else:
-                print("no trade")
 
-            last_signal_ts = ts
+                atr = float(features["atr_14"].iloc[-1])
+                rsi = float(features["rsi_14"].iloc[-1])
+                vix = float(features["vix_close"].iloc[-1])
+
+                if not already_logged(ts):
+                    log_trade(ts, sig, conf, entry, atr, rsi, vix, engine)
+                    last_logged_time[sig] = now
+                else:
+                    logger.info(f"{sig} {conf}% ADX:{adx:.1f} ({trend}) — already logged")
+            else:
+                logger.info(f"{sig} {conf}% ADX:{adx:.1f} ({trend}) — no trade")
+
             time.sleep(30)
 
         except KeyboardInterrupt:
             print("\nStopped.")
             break
         except Exception as e:
-            print(f"[{datetime.now().strftime('%H:%M:%S')}] Error: {e}")
+            logger.error(f"Error: {e}")
             time.sleep(30)
 
-        
+
 
 
 if __name__ == "__main__":

@@ -1,0 +1,12 @@
+import pandas as pd
+df = pd.read_csv("data/raw/backfill_candles.csv")
+df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True)
+print(f"Total candles : {len(df)}")
+print(f"From          : {df['timestamp'].iloc[0]}")
+print(f"To            : {df['timestamp'].iloc[-1]}")
+print(f"Unique days   : {df['timestamp'].dt.date.nunique()}")
+print(f"Nulls         : {df.isnull().sum().sum()}")
+print(f"Columns       : {list(df.columns)}")
+print()
+by_day = df.groupby(df["timestamp"].dt.date).size()
+print(by_day.to_string())

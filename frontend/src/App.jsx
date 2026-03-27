@@ -112,11 +112,11 @@ function TradePanel({ signal, context }) {
         ))}
         {readyFrames.length === 0 && (
           <div style={{ color: "#6b7280", fontSize: "12px", marginBottom: "8px" }}>
-            No timeframe >= 60% yet
+            No timeframe &gt;= 60% yet
           </div>
         )}
         <div style={{ marginTop: "14px", fontSize: "11px", color: "#6b7280", lineHeight: "1.6" }}>
-          Needs: 5-min UP/DOWN · Combined >= 60%
+          Needs: 5-min UP/DOWN · Combined &gt;= 60%
         </div>
       </Card>
     )

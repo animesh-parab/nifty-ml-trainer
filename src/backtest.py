@@ -254,8 +254,6 @@ if __name__ == "__main__":
     if trades.empty:
         print("No trades to analyze.")
     else:
-        metrics  = calculate_metrics(trades)
+        metrics = calculate_metrics(trades)
         print_summary(metrics)
         save_results(metrics)
-    print_summary(metrics)
-    save_results(metrics)

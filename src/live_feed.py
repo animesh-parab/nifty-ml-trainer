@@ -126,7 +126,6 @@ def insert_candles(df):
                         "close": row["close"],
                     })
                     inserted += 1
-                inserted += 1
             except Exception as e:
                 print(f"  Insert error: {e}")
                 break

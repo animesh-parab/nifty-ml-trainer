@@ -13,7 +13,8 @@ url = "postgresql://{}:{}@{}:{}/{}".format(
 engine = create_engine(url)
 
 with engine.connect() as conn:
-    r = conn.execute(text("SELECT COUNT(time), MAX(time) FROM nifty_1min WHERE time >= '2026-03-20'"))
+    today_utc = pd.Timestamp.now(tz="UTC").normalize()
+    r = conn.execute(text(f"SELECT COUNT(time), MAX(time) FROM nifty_1min WHERE time >= '{today_utc}'"))
     row = r.fetchone()
     print(f"Spot candles today:    {row[0]} | Latest: {row[1]}")
 

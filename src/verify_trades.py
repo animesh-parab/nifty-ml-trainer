@@ -112,7 +112,7 @@ def main():
                 conn,
                 row['timestamp'],
                 row['signal'],
-                float(row['target']),
+                float(row['t1']),
                 float(row['stoploss'])
             )
 

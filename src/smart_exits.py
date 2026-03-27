@@ -47,8 +47,7 @@ def fetch_candles(engine, n=1000):
             result = conn.execute(text(f"""
                 SELECT time, open, high, low, close
                 FROM nifty_1min
-                WHERE time >= '2026-03-13 00:00:00+00'
-                AND EXTRACT(DOW FROM time AT TIME ZONE 'Asia/Kolkata') BETWEEN 1 AND 5
+                WHERE EXTRACT(DOW FROM time AT TIME ZONE 'Asia/Kolkata') BETWEEN 1 AND 5
                 ORDER BY time DESC
                 LIMIT {n}
             """))
@@ -73,11 +72,9 @@ def fetch_prev_day_levels(engine):
                     MIN(low)  as day_low
                 FROM nifty_1min
                 WHERE DATE(time AT TIME ZONE 'Asia/Kolkata') < (
-    SELECT MAX(DATE(time AT TIME ZONE 'Asia/Kolkata')) 
-    FROM nifty_1min 
-    WHERE time >= '2026-03-13 00:00:00+00'
+    SELECT MAX(DATE(time AT TIME ZONE 'Asia/Kolkata'))
+    FROM nifty_1min
 )
-AND DATE(time AT TIME ZONE 'Asia/Kolkata') >= '2026-03-13'
 AND EXTRACT(HOUR FROM time AT TIME ZONE 'UTC') >= 3
 AND EXTRACT(HOUR FROM time AT TIME ZONE 'UTC') < 11
 GROUP BY trade_date
@@ -202,9 +199,11 @@ def level_reason(level):
 
 # ── Safe target picker ───────────────────────────────────────
 def pick_target(sr_list, idx, entry, atr, atr_mult, is_long, rn_idx=0):
+    atr_cap = atr * 1.5
     if len(sr_list) > idx:
         price = round(sr_list[idx]["price"], 2)
-        if abs(price - entry) <= MAX_TARGET_PTS:
+        dist  = abs(price - entry)
+        if dist <= MAX_TARGET_PTS and dist <= atr_cap:
             return price, level_reason(sr_list[idx])
     rn = get_round_numbers(entry, "above" if is_long else "below", rn_idx + 3)
     if len(rn) > rn_idx:
@@ -236,7 +235,9 @@ def get_exits(signal, entry, atr, engine):
 
     sr_for_sl = resistances if not is_long else supports
     if sr_for_sl:
-        sl_candidates[abs(entry - sr_for_sl[0]["price"])] = level_reason(sr_for_sl[0])
+        sr_sl_dist = abs(entry - sr_for_sl[0]["price"])
+        if sr_sl_dist <= atr * ATR_SL_MULT:
+            sl_candidates[sr_sl_dist] = level_reason(sr_for_sl[0])
 
     widest    = max(sl_candidates.keys())
     sl_reason = sl_candidates[widest]

@@ -18,10 +18,10 @@ DB_USER  = os.getenv("DB_USER")
 DB_PASS  = os.getenv("DB_PASS")
 GROQ_KEY = os.getenv("GROQ_API_KEY")
 
-MODELS_DIR    = "models"
-FEATURES_PATH = "data/processed/features.parquet"
+MODELS_DIR     = "models"
+FEATURES_PATH  = "data/processed/features.parquet"
 TRADE_LOG_PATH = "data/processed/trade_log.csv"
-TRADE_LOG_PATH = "data/processed/trade_log.csv"
+BACKTEST_PATH  = "data/processed/backtest_results.json"
 
 app = FastAPI(title="Nifty ML Trainer API")
 

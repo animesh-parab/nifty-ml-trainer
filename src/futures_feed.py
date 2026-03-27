@@ -13,9 +13,7 @@ import pandas as pd
 from datetime import datetime, timezone, date
 from dotenv import load_dotenv
 from sqlalchemy import create_engine, text
-from SmartApi import SmartConnect
 from SmartApi.smartWebSocketV2 import SmartWebSocketV2
-import pyotp
 
 load_dotenv()
 
@@ -118,24 +116,26 @@ def init_db():
     print("✓ nifty_futures_1min table ready")
 
 
-# ── Login ────────────────────────────────────────────────────
-def login():
-    try:
-        obj  = SmartConnect(api_key=API_KEY)
-        totp = pyotp.TOTP(TOTP_SECRET).now()
-        data = obj.generateSession(CLIENT_ID, MPIN, totp)
-        if data["status"]:
-            feed_token   = obj.getfeedToken()
-            access_token = data["data"]["jwtToken"]
-            obj.access_token = access_token
-            print("✓ Login successful")
-            return obj, feed_token
-        else:
-            print(f"✗ Login failed: {data.get('message')}")
-            return None, None
-    except Exception as e:
-        print(f"✗ Login error: {e}")
-        return None, None
+# ── Load session saved by websocket_feed.py ──────────────────
+SESSION_PATH = "data/processed/session.json"
+
+def load_session(retries=10, wait=5):
+    """Wait for websocket_feed.py to write session.json, then load it."""
+    import json
+    for i in range(retries):
+        if os.path.exists(SESSION_PATH):
+            try:
+                with open(SESSION_PATH) as f:
+                    s = json.load(f)
+                if s.get("access_token") and s.get("feed_token"):
+                    print("✓ Session loaded from websocket_feed")
+                    return s["access_token"], s["feed_token"]
+            except Exception as e:
+                print(f"✗ Session read error: {e}")
+        print(f"  Waiting for session.json... ({i+1}/{retries})")
+        time.sleep(wait)
+    print("✗ Could not load session — start websocket_feed.py first")
+    return None, None
 
 
 # ── WebSocket callbacks ──────────────────────────────────────
@@ -313,9 +313,9 @@ def main():
     contract = fetch_current_contract()
     print(f"Trading: {contract['symbol']} (expires {contract['expiry']})")
 
-    # Login
-    smart_api, feed_token = login()
-    if not smart_api:
+    # Load session from websocket_feed.py (no separate login)
+    access_token, feed_token = load_session()
+    if not access_token:
         return
 
     print(f"Market open: {is_market_open()}")
@@ -337,7 +337,7 @@ def main():
     token_list = [{"exchangeType": 2, "tokens": [contract["token"]]}]  # exchangeType 2 = NFO
 
     sws = SmartWebSocketV2(
-        smart_api.access_token,
+        access_token,
         API_KEY,
         CLIENT_ID,
         feed_token,
